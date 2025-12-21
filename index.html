@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audio Samples</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    th, td { padding: 6px; }
+    .cell { display: flex; align-items: center; }
+    audio { width: auto; max-width: 100%; } /* don't force full-width */
+
+    /* Now playing transcription box */
+    .now-playing {
+      margin: 16px 0 18px;
+      padding: 12px 14px;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      background: #fafafa;
+    }
+    .now-playing .label { font-weight: 700; margin-right: 8px; }
+    .now-playing .utt {
+      font-weight: 600;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    .now-playing .text { font-style: italic; }
+
+    /* Progress/seek bar under transcription */
+    .seek-wrap {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .seek-wrap input[type="range"] {
+      flex: 1;
+      width: 100%;
+    }
+    .time {
+      font-variant-numeric: tabular-nums;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.95rem;
+      white-space: nowrap;
+      opacity: 0.9;
+    }
+
+    /* Optional highlight for active utterance header */
+    th.active-utt {
+      outline: 2px solid #999;
+      outline-offset: -2px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Speech Audio Samples</h1>
+  <p>This is the audio samples presentation for the paper <strong>DISCRETE-TIME DIFFUSION-LIKE MODELS FOR SPEECH SYNTHESIS</strong>.</p>
+  <p>The first column contains system names. The first row contains utterance names.</p>
+  <p>All systems share the same vocoder, 'Vocoded speech' uses ground truth mel spectrogram to generate speech audio. </p>
+  <!-- Transcription + seek bar -->
+  <section class="now-playing" aria-live="polite">
+    <div>
+      <span class="label">Transcription:</span>
+      <span class="utt" id="nowUtt">—</span>
+      <span class="text" id="nowText">Press play button on any sample to show its transcription here.</span>
+    </div>
+
+    <!-- NEW: global play bar (seek) -->
+    <div class="seek-wrap">
+      <span class="time" id="curTime">0:00</span>
+      <input id="seekBar" type="range" min="0" max="1000" value="0" step="1" disabled />
+      <span class="time" id="durTime">0:00</span>
+    </div>
+  </section>
+
+  <div class="table-wrap">
+    <table id="audioTable"></table>
+  </div>
+</div>
+
+<script>
+  const systems = [
+    "Vocoded speech",
+    "Grad-TTS-CT (Baseline)",
+    "Grad-TTS-DT",
+    "Blurring",
+    "Mixture",
+    "RFAG",
+    "RFMG",
+  ];
+
+  const utterances = [
+    "LJ036-0169",
+    "LJ026-0034",
+    "LJ013-0045",
+    "LJ045-0082",
+    "LJ012-0230",
+    "LJ014-0094",
+    "LJ015-0308",
+    "LJ028-0416",
+    "LJ016-0049",
+    "LJ048-0033",
+    "LJ046-0111",
+    "LJ023-0122",
+    "LJ015-0025",
+    "LJ021-0140",
+    "LJ010-0228"
+  ];
+
+  // Fill these with real text (key must match utterance id)
+  const transcriptions = {
+    "LJ013-0045": "Wallace's relations warned him against his Liverpool friend,",
+    "LJ036-0169": "he would have reached his destination at approximately twelve:fifty-four p.m",
+    "LJ026-0034": "When any given \"protist\" has to be classified the case must be decided on its individual merits;",
+    "LJ028-0410": "There among the ruins they still live in the same kind of houses,",
+    "LJ045-0082": "it appears that Marina Oswald also complained that her husband was not able to provide more material things for her.",
+    "LJ012-0230": "Shortly before the day fixed for execution, Bishop made a full confession, the bulk of which bore the impress of truth,",
+    "LJ014-0094": "Discovery of the murder came in this wise. O'Connor, a punctual and well-conducted official, was at once missed at the London Docks.",
+    "LJ015-0308": "and others who swore to the meetings of the conspirators and their movements. Saward was found guilty,",
+    "LJ028-0416": "(if man may speak so confidently of His great impenetrable counsels), for an eternal Testimony of His great work in the confusion of Man's pride,",
+    "LJ016-0049": "He had here completed his ascent.",
+    "LJ048-0033": "Prior to November twenty-two, nineteen sixty-three",
+    "LJ046-0111": "The Secret Service has attempted to perform this function through the activities of its Protective Research Section",
+    "LJ023-0122": "It was said in last year's Democratic platform,",
+    "LJ015-0025": "The bank enjoyed an excellent reputation, it had a good connection, and was supposed to be perfectly sound.",
+    "LJ021-0140": "and in such an effort we should be able to secure for employers and employees and consumers",
+    "LJ010-0228": "He was released from Broadmoor in eighteen seventy-eight, and went abroad."
+  };
+
+  const table = document.getElementById("audioTable");
+  const nowUtt = document.getElementById("nowUtt");
+  const nowText = document.getElementById("nowText");
+
+  // NEW: seek bar elements
+  const seekBar = document.getElementById("seekBar");
+  const curTimeEl = document.getElementById("curTime");
+  const durTimeEl = document.getElementById("durTime");
+
+  // NEW: track the currently active audio
+  let activeAudio = null;
+  let isSeeking = false;
+
+  function fmtTime(sec) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  // THEAD
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  const th0 = document.createElement("th");
+  th0.textContent = "System";
+  hr.appendChild(th0);
+
+  const headerByUtt = new Map();
+  utterances.forEach(u => {
+    const th = document.createElement("th");
+    th.textContent = u;
+    th.dataset.utterance = u;
+    headerByUtt.set(u, th);
+    hr.appendChild(th);
+  });
+
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  // TBODY
+  const tbody = document.createElement("tbody");
+
+  systems.forEach(sys => {
+    const tr = document.createElement("tr");
+
+    const rowHead = document.createElement("th");
+    rowHead.textContent = sys;
+    tr.appendChild(rowHead);
+
+    utterances.forEach(u => {
+      const td = document.createElement("td");
+      const cell = document.createElement("div");
+      cell.className = "cell";
+
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "none";
+      audio.dataset.utterance = u;
+      audio.dataset.system = sys;
+
+      const wav = document.createElement("source");
+      wav.src = `samples/${sys}/${u}.wav`;
+      wav.type = "audio/wav";
+      audio.appendChild(wav);
+
+      cell.appendChild(audio);
+      td.appendChild(cell);
+      tr.appendChild(td);
+    });
+
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+
+  function clearHeaderHighlights() {
+    headerByUtt.forEach(th => th.classList.remove("active-utt"));
+  }
+
+  // NEW: hook/unhook timeupdate handlers for the active audio
+  function detachActiveAudio() {
+    if (!activeAudio) return;
+    activeAudio.removeEventListener("timeupdate", onTimeUpdate);
+    activeAudio.removeEventListener("loadedmetadata", onLoadedMeta);
+    activeAudio.removeEventListener("ended", onEnded);
+  }
+
+  function attachActiveAudio(a) {
+    activeAudio = a;
+    activeAudio.addEventListener("timeupdate", onTimeUpdate);
+    activeAudio.addEventListener("loadedmetadata", onLoadedMeta);
+    activeAudio.addEventListener("ended", onEnded);
+    // Initialize UI right away
+    onLoadedMeta();
+    onTimeUpdate();
+  }
+
+  function onLoadedMeta() {
+    if (!activeAudio) return;
+    const dur = activeAudio.duration;
+    durTimeEl.textContent = fmtTime(dur);
+    seekBar.disabled = !isFinite(dur) || dur <= 0;
+  }
+
+  function onTimeUpdate() {
+    if (!activeAudio) return;
+    curTimeEl.textContent = fmtTime(activeAudio.currentTime);
+
+    if (isSeeking) return; // don't fight the user's drag
+    const dur = activeAudio.duration;
+    if (isFinite(dur) && dur > 0) {
+      const ratio = activeAudio.currentTime / dur;
+      seekBar.value = Math.round(ratio * Number(seekBar.max));
+    } else {
+      seekBar.value = 0;
+    }
+  }
+
+  function onEnded() {
+    // leave transcription visible; just freeze bar at end
+    onTimeUpdate();
+  }
+
+  // When user drags the seek bar
+  seekBar.addEventListener("input", () => {
+    if (!activeAudio) return;
+    isSeeking = true;
+    const dur = activeAudio.duration;
+    if (isFinite(dur) && dur > 0) {
+      const ratio = Number(seekBar.value) / Number(seekBar.max);
+      const t = ratio * dur;
+      curTimeEl.textContent = fmtTime(t);
+    }
+  });
+
+  // On release, actually seek
+  seekBar.addEventListener("change", () => {
+    if (!activeAudio) return;
+    const dur = activeAudio.duration;
+    if (isFinite(dur) && dur > 0) {
+      const ratio = Number(seekBar.value) / Number(seekBar.max);
+      activeAudio.currentTime = ratio * dur;
+    }
+    isSeeking = false;
+  });
+
+  // Pause other players when one plays + show transcription + enable seek bar control
+  document.addEventListener("play", (e) => {
+    if (e.target.tagName !== "AUDIO") return;
+
+    // Pause all others
+    document.querySelectorAll("audio").forEach(a => { if (a !== e.target) a.pause(); });
+
+    // Update transcription
+    const u = e.target.dataset.utterance;
+    const t = transcriptions[u];
+    nowUtt.textContent = u || "—";
+    nowText.textContent = (t && t.trim()) ? ` ${t}` : " (transcription not provided)";
+
+    // Highlight header
+    clearHeaderHighlights();
+    const header = headerByUtt.get(u);
+    if (header) header.classList.add("active-utt");
+
+    // NEW: switch active audio for seek bar updates
+    if (activeAudio !== e.target) {
+      detachActiveAudio();
+      attachActiveAudio(e.target);
+    }
+  }, true);
+</script>
+</body>
+</html>
